@@ -1,7 +1,7 @@
 
-FROM golang:1.13
+FROM golang:1.22
 
-RUN go get -u -v github.com/codeskyblue/fswatch
+RUN go install github.com/codeskyblue/fswatch@latest
 
 RUN mkdir -p /go/src/hub
 WORKDIR /go/src/hub
