@@ -19,7 +19,7 @@ services:
     build:
       context: ./hub
     ports:
-      - "7357:8080"
+      - "8080:8080"
     volumes:
       - ./hub:/go/src/hub
 
