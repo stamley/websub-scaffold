@@ -170,7 +170,7 @@ func constructFullURL(topic string, callback string, challenge string) string {
 	identical to the randomly generated one that the hub created.
 */
 
-func verifyIntent(callback string, topic string, w http.ResponseWriter) (bool, error) {
+func verifyIntent(callback string, topic string) (bool, error) {
 	// The secret must be less than 200 bytes in length,
 	// (https://www.w3.org/TR/websub/#x5-1-subscriber-sends-subscription-request)
 	secretLength := 100
@@ -226,7 +226,7 @@ func handleRequests(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			addSubscriber(callback, secret, topic)
-			if success, err := verifyIntent(callback, topic, w); !success {
+			if success, err := verifyIntent(callback, topic); !success {
 				log.Printf("Error verifying intent: %v\n", err)
 				http.Error(w, "Intent not successfully verified", http.StatusNotFound)
 			}
