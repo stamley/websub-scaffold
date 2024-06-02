@@ -2,7 +2,10 @@ package main
 
 import (
 	"bytes"
+	"crypto/hmac"
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"net/http"
@@ -16,8 +19,10 @@ type Subscriber struct {
 	Topic    string
 }
 
+// Currently only locally stored map of subscribers, needs to be more sophisticated later on
 var subscribers = make(map[string]Subscriber)
 
+// Mutex for possible async accesses of subscribers
 var mutex = &sync.Mutex{}
 
 func addSubscriber(callback string, secret string, topic string) {
@@ -34,6 +39,7 @@ func addSubscriber(callback string, secret string, topic string) {
 }
 
 func removeSubscriber(callback string) {
+	// Lock access to map containing subscribers
 	mutex.Lock()
 	defer mutex.Unlock()
 	delete(subscribers, callback)
@@ -51,6 +57,8 @@ func printSubscribers() {
 
 func randomString(length int) (string, error) {
 	const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+	// Allocated dynamic slice with specified length, using slice due to not knowing length
+	// until runtime
 	bytes := make([]byte, length)
 	if _, err := io.ReadFull(rand.Reader, bytes); err != nil {
 		return "", err
@@ -61,14 +69,10 @@ func randomString(length int) (string, error) {
 	return string(bytes), nil
 }
 
-func main() {
-	http.HandleFunc("/publish", handlePublish)
-	http.HandleFunc("/", handleRequests)
-
-	fmt.Println("Started server")
-
-	// Last thing to do:
-	http.ListenAndServe(":8080", nil)
+func generateSignature(data []byte, secret string) string {
+	hmac := hmac.New(sha256.New, []byte(secret))
+	hmac.Write(data)
+	return hex.EncodeToString(hmac.Sum(nil))
 }
 
 func assertError(err error) bool {
@@ -104,28 +108,30 @@ func getBody(fullURL string) ([]byte, error) {
 	return body, nil
 }
 
-func verifyIntent(callback string, topic string) {
-	// Define the base URL for the hub
-	hubURL := callback // Replace with the actual hub URL
-
-	// Construct the query parameters
-	challenge, err := randomString(32)
-	if assertError(err) {
-		return
-	}
-
+func constructFullURL(topic string, callback string, challenge string) string {
 	lease_seconds := string(5 * 60)
-
+	// Construct the query parameters
 	queryParams := url.Values{}
 	queryParams.Add("hub.mode", "subscribe")
 	queryParams.Add("hub.topic", topic)
 	queryParams.Add("hub.callback", callback)
 	queryParams.Add("hub.challenge", challenge)
 	queryParams.Add("hub.lease_seconds", lease_seconds)
-	// Add more query parameters here if needed
 
 	// Append the query parameters to the hub URL
-	fullURL := fmt.Sprintf("%s?%s", hubURL, queryParams.Encode())
+	fullURL := fmt.Sprintf("%s?%s", callback, queryParams.Encode())
+	return fullURL
+}
+
+func verifyIntent(callback string, topic string, w http.ResponseWriter) {
+	// The secret must be less than 200 bytes in length,
+	// (https://www.w3.org/TR/websub/#x5-1-subscriber-sends-subscription-request)
+	challenge, err := randomString(100)
+	if assertError(err) {
+		return
+	}
+
+	fullURL := constructFullURL(topic, callback, challenge)
 
 	body, err := getBody(fullURL)
 	if assertError(err) {
@@ -134,19 +140,14 @@ func verifyIntent(callback string, topic string) {
 
 	// Print the response body
 	if challenge == string(body) {
-		fmt.Println("Correct challenge in response.")
+		fmt.Println("Challenge completed.")
 	} else {
-		fmt.Println("Incorrect challenge in response.")
-		//http.Error(w, "Invalid form data", http.StatusBadRequest)
-		//return
+		http.Error(w, "Challenge incorrect", http.StatusBadRequest)
+		return
 	}
 }
 func handleRequests(w http.ResponseWriter, r *http.Request) {
-	//fmt.Println("\n\nHej nu hanldar vi\n\n")
-	switch r.Method {
-	case http.MethodGet:
-
-	case http.MethodPost: // Initial subscription request
+	if r.Method == http.MethodPost {
 
 		if err := r.ParseForm(); err != nil {
 			http.Error(w, "Invalid form data", http.StatusBadRequest)
@@ -156,33 +157,39 @@ func handleRequests(w http.ResponseWriter, r *http.Request) {
 		mode := r.FormValue("hub.mode")
 		callback := r.FormValue("hub.callback")
 		topic := r.FormValue("hub.topic")
+		secret := r.FormValue("hub.secret")
 
 		if mode == "subscribe" {
 			if topic == "a-topic" {
-				addSubscriber(callback, "secret", topic)
+				addSubscriber(callback, secret, topic)
 			} else {
-				// 400 bad request
 				http.Error(w, "Invalid subscription topic", http.StatusBadRequest)
 				return
 			}
 
-			verifyIntent(callback, topic)
+			verifyIntent(callback, topic, w)
 
-			fmt.Println("Mode, topic, callback: ", mode, r.FormValue("hub.topic"), r.FormValue("hub.callback"))
-			printSubscribers()
+			fmt.Printf("Mode: %s, topic: %s, callback: %s\n", mode, r.FormValue("hub.topic"), r.FormValue("hub.callback"))
+
 		} else if mode == "unsubscribe" {
 			removeSubscriber(callback)
 		}
+	} else {
+		http.Error(w, "Invalid operation", http.StatusBadRequest)
 	}
 }
 
-func sendPostRequest(callbackURL string, data []byte) {
+func publish(callbackURL string, secret string, data []byte) {
 	req, err := http.NewRequest("POST", callbackURL, bytes.NewBuffer(data))
 	if err != nil {
 		fmt.Printf("Error creating request: %v\n", err)
 		return
 	}
+
+	signature := generateSignature(data, secret)
+
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Hub-Signature", "sha256="+signature)
 
 	client := &http.Client{}
 	resp, err := client.Do(req)
@@ -197,33 +204,17 @@ func sendPostRequest(callbackURL string, data []byte) {
 
 func handlePublish(w http.ResponseWriter, r *http.Request) {
 	for _, subscriber := range subscribers {
-		messageData := []byte(`{"title":"New Article","url":"http://example.com/new-article"}`)
-		sendPostRequest(subscriber.Callback, messageData)
+		messageData := []byte(`{"title":"Payload to subscribers","message":"Hi everyone"}`)
+		publish(subscriber.Callback, subscriber.Secret, messageData)
 	}
 }
 
-// If for example subscriber attempts to subscribe to unexisting topic: "400 bad request"
-// If hub accepts request: "202 accepted"
+func main() {
+	http.HandleFunc("/publish", handlePublish)
+	http.HandleFunc("/", handleRequests)
 
-//1.  Subscriber will send "form-encoded POST request to the hub with:"
-/*
-hub.mode = "subscribe"
-hub.topic = "URL with content subscribers are subscribing to 'a-topic'"
-hub.callback = "URL that subscribers want hub to send notifications to, so must be
-publicly accesible"
+	fmt.Println("Started server")
 
-Q: Must URLs be full-length? Yes seems like it
-*/
-
-//2. Hub sends vericification by a GET request BACK to subscriber with:
-/*
-hub.mode = "subscribe"
-hub.topic = "Topic URL from subscription request"
-hub.challenge = "Hub-generated 'random' string that must be echoed by subscriber"
-hub.lease_seconds = "Hub-determined number of secs that subscription will stay alive,
-after which a resub is needed."
-
-*/
-
-//3. Subscriber confirms with a 200 OK and a "request body" of the exact same string
-// generated in "hub.challenge", not anyhting else and not form encoded
+	// Last thing to do:
+	http.ListenAndServe(":8080", nil)
+}
