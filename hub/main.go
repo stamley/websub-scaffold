@@ -1,7 +1,8 @@
 /*
 
-	Implementation of hub according to websub protocol: https://www.w3.org/TR/websub/
-	Does not include publisher and the hub sends a "dummy" message acting as a publisher
+	This is an implementation of a hub according to websub protocol: https://www.w3.org/TR/websub/
+	using docker. It does not include an implementation for the publisher and the hub merely
+	sends a "dummy" message acting as a publisher to ensure functionality.
 
 	Written by Axel Lystam, 2024-06-12
 
