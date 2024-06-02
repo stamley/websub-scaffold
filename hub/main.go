@@ -87,6 +87,8 @@ func printSubscribers() {
 /*
 	Generates random string based on predefined charset.
 	Uses dynamic slice with specified length, due to not knowing length until runtime.
+	Uses values from rand.reader modulo with charset to get random values for characters,
+	instead of just random integer values.
 */
 
 func randomString(length int) (string, error) {
@@ -103,7 +105,8 @@ func randomString(length int) (string, error) {
 }
 
 /*
-	Uses sha256 to generate signature, which is accepted for websub
+	Uses sha256 to generate signature based on payload and the corresponding secret of the
+	subscriber.
 */
 
 func generateSignature(data []byte, secret string) string {
@@ -237,6 +240,8 @@ func handleRequests(w http.ResponseWriter, r *http.Request) {
 		default:
 			http.Error(w, "Invalid mode value", http.StatusBadRequest)
 		}
+	} else {
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
 	}
 }
 
